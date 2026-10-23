@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stock Trading Simulator</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1c2230; --muted:#6b7385; --line:#e3e6ec; --up:#0a8a4a; --down:#d0312d; --accent:#2457d6; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#12151c; --card:#1b202b; --text:#e8ebf2; --muted:#9099ad; --line:#2a3140; --up:#3ccf86; --down:#ff6b66; --accent:#6b94ff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, sans-serif; background:var(--bg); color:var(--text); }
+  header { display:flex; justify-content:space-between; align-items:center; padding:14px 20px; background:var(--card); border-bottom:1px solid var(--line); }
+  h1 { font-size:18px; margin:0; }
+  main { max-width:1100px; margin:20px auto; padding:0 16px; display:grid; gap:16px; grid-template-columns: 1fr 1fr; }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; overflow-x:auto; }
+  .card.wide { grid-column: 1 / -1; }
+  h2 { font-size:14px; margin:0 0 12px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:right; padding:8px 6px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th:first-child, td:first-child { text-align:left; }
+  th { color:var(--muted); font-weight:500; }
+  .up { color:var(--up); } .down { color:var(--down); }
+  input, button { font:inherit; padding:7px 10px; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--text); }
+  input.qty { width:64px; }
+  button { cursor:pointer; }
+  button.buy { background:var(--up); color:#fff; border-color:var(--up); }
+  button.sell { background:var(--down); color:#fff; border-color:var(--down); }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .stats { display:grid; grid-template-columns: repeat(auto-fit, minmax(130px,1fr)); gap:12px; }
+  .stat .label { color:var(--muted); font-size:12px; }
+  .stat .val { font-size:20px; font-weight:600; }
+  #msg { padding:10px 14px; border-radius:8px; margin-bottom:12px; display:none; font-size:14px; }
+  #msg.ok { display:block; background:rgba(10,138,74,.12); color:var(--up); }
+  #msg.err { display:block; background:rgba(208,49,45,.12); color:var(--down); }
+  canvas { width:100%; height:240px; display:block; }
+  #login { max-width:380px; margin:80px auto; text-align:center; }
+  #login input { width:100%; margin:12px 0; }
+  .hidden { display:none !important; }
+</style>
+</head>
+<body>
+
+<div id="login" class="card">
+  <h2>Stock Trading Simulator</h2>
+  <p style="color:var(--muted);font-size:14px">Enter a username to start with $10,000 virtual cash. Returning users pick up where they left off.</p>
+  <input id="username" placeholder="Username" maxlength="20" autofocus>
+  <button class="primary" style="width:100%" onclick="login()">Start trading</button>
+  <div id="loginErr" class="down" style="margin-top:10px;font-size:14px"></div>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <h1>📈 Stock Trading Simulator</h1>
+    <div><span id="who"></span> <button onclick="logout()">Log out</button></div>
+  </header>
+  <main>
+    <div class="card wide">
+      <div id="msg"></div>
+      <h2>Portfolio</h2>
+      <div class="stats">
+        <div class="stat"><div class="label">Total value</div><div class="val" id="total">-</div></div>
+        <div class="stat"><div class="label">Cash</div><div class="val" id="cash">-</div></div>
+        <div class="stat"><div class="label">Invested</div><div class="val" id="invested">-</div></div>
+        <div class="stat"><div class="label">Profit / Loss</div><div class="val" id="pnl">-</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Market</h2>
+      <table>
+        <thead><tr><th>Symbol</th><th>Price</th><th>Change</th><th>Trade</th></tr></thead>
+        <tbody id="market"></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>Holdings</h2>
+      <table>
+        <thead><tr><th>Symbol</th><th>Qty</th><th>Avg cost</th><th>Price</th><th>P/L</th></tr></thead>
+        <tbody id="holdings"></tbody>
+      </table>
+    </div>
+
+    <div class="card wide">
+      <h2>Performance over time</h2>
+      <canvas id="chart"></canvas>
+    </div>
+
+    <div class="card wide">
+      <h2>Recent transactions</h2>
+      <table>
+        <thead><tr><th>Time</th><th>Type</th><th>Symbol</th><th>Qty</th><th>Price</th><th>Total</th></tr></thead>
+        <tbody id="txs"></tbody>
+      </table>
+    </div>
+  </main>
+</div>
+
+<script>
+let user = localStorage.getItem('user');
+let timer = null;
+const $ = id => document.getElementById(id);
+const money = n => '$' + Number(n).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+const cls = n => n >= 0 ? 'up' : 'down';
+const sign = n => (n >= 0 ? '+' : '') + Number(n).toFixed(2);
+
+async function api(path, params = {}, method = 'GET') {
+  const body = new URLSearchParams({ user, ...params }).toString();
+  const res = await fetch('/api/' + path + (method === 'GET' ? '?' + body : ''), {
+    method, headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: method === 'GET' ? undefined : body
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Request failed');
+  return data;
+}
+
+async function login() {
+  const name = $('username').value.trim();
+  try {
+    user = name;
+    const r = await api('login', {}, 'POST');
+    user = r.user;
+    localStorage.setItem('user', user);
+    start();
+  } catch (e) { user = null; $('loginErr').textContent = e.message; }
+}
+
+function logout() { localStorage.removeItem('user'); user = null; clearInterval(timer); $('app').classList.add('hidden'); $('login').classList.remove('hidden'); }
+
+function start() {
+  $('login').classList.add('hidden'); $('app').classList.remove('hidden');
+  $('who').textContent = user;
+  refresh(); clearInterval(timer); timer = setInterval(refresh, 3000);
+}
+
+function flash(text, ok) { const m = $('msg'); m.textContent = text; m.className = ok ? 'ok' : 'err'; setTimeout(() => m.className = '', 4000); }
+
+async function trade(symbol, side) {
+  const qty = $('q-' + symbol).value;
+  try {
+    const r = await api('trade', { symbol, side, qty }, 'POST');
+    flash('Executed: ' + r.message, true);
+    refresh();
+  } catch (e) { flash(e.message, false); }
+}
+
+async function refresh() {
+  try {
+    const [market, pf, txs, perf] = await Promise.all([api('market'), api('portfolio'), api('transactions'), api('performance')]);
+    renderMarket(market); renderPortfolio(pf); renderTxs(txs); drawChart(perf);
+  } catch (e) { if (e.message.includes('Unknown user')) logout(); }
+}
+
+function renderMarket(list) {
+  const saved = {};
+  list.forEach(s => { const el = $('q-' + s.symbol); if (el) saved[s.symbol] = el.value; });
+  $('market').innerHTML = list.map(s => `<tr>
+    <td><b>${s.symbol}</b><div style="color:var(--muted);font-size:12px">${s.name}</div></td>
+    <td>${money(s.price)}</td>
+    <td class="${cls(s.changePct)}">${sign(s.changePct)}%</td>
+    <td><input class="qty" id="q-${s.symbol}" type="number" min="1" value="${saved[s.symbol] || 1}">
+        <button class="buy" onclick="trade('${s.symbol}','BUY')">Buy</button>
+        <button class="sell" onclick="trade('${s.symbol}','SELL')">Sell</button></td></tr>`).join('');
+}
+
+function renderPortfolio(p) {
+  $('total').textContent = money(p.total);
+  $('cash').textContent = money(p.cash);
+  $('invested').textContent = money(p.holdingsValue);
+  $('pnl').innerHTML = `<span class="${cls(p.pnl)}">${sign(p.pnl)} (${sign(p.pnlPct)}%)</span>`;
+  $('holdings').innerHTML = p.holdings.length ? p.holdings.map(h => `<tr>
+    <td><b>${h.symbol}</b></td><td>${h.qty}</td><td>${money(h.avgCost)}</td><td>${money(h.price)}</td>
+    <td class="${cls(h.pnl)}">${sign(h.pnl)}</td></tr>`).join('')
+    : '<tr><td colspan="5" style="text-align:center;color:var(--muted)">No holdings yet. Buy something!</td></tr>';
+}
+
+function renderTxs(list) {
+  $('txs').innerHTML = list.length ? list.map(t => `<tr>
+    <td>${new Date(t.time).toLocaleString()}</td><td class="${t.type === 'BUY' ? 'up' : 'down'}">${t.type}</td>
+    <td>${t.symbol}</td><td>${t.qty}</td><td>${money(t.price)}</td><td>${money(t.total)}</td></tr>`).join('')
+    : '<tr><td colspan="6" style="text-align:center;color:var(--muted)">No transactions yet.</td></tr>';
+}
+
+function drawChart(data) {
+  const c = $('chart'), dpr = window.devicePixelRatio || 1;
+  c.width = c.clientWidth * dpr; c.height = c.clientHeight * dpr;
+  const g = c.getContext('2d'); g.scale(dpr, dpr);
+  const W = c.clientWidth, H = c.clientHeight, pad = {l:60, r:12, t:12, b:24};
+  g.clearRect(0, 0, W, H);
+  const style = getComputedStyle(document.documentElement);
+  const muted = style.getPropertyValue('--muted'), accent = style.getPropertyValue('--accent'), line = style.getPropertyValue('--line');
+  if (data.length < 2) { g.fillStyle = muted; g.font = '14px system-ui'; g.fillText('Collecting data… a point is recorded every 30s and after each trade.', pad.l, H / 2); return; }
+  const vals = data.map(d => d.value);
+  let min = Math.min(...vals), max = Math.max(...vals);
+  if (max - min < 1) { min -= 1; max += 1; }
+  const t0 = data[0].time, t1 = data[data.length - 1].time || t0 + 1;
+  const x = t => pad.l + (t - t0) / (t1 - t0 || 1) * (W - pad.l - pad.r);
+  const y = v => pad.t + (1 - (v - min) / (max - min)) * (H - pad.t - pad.b);
+  g.font = '11px system-ui'; g.fillStyle = muted; g.strokeStyle = line; g.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const v = min + (max - min) * i / 4, yy = y(v);
+    g.beginPath(); g.moveTo(pad.l, yy); g.lineTo(W - pad.r, yy); g.stroke();
+    g.fillText(money(v), 4, yy + 4);
+  }
+  g.fillText(new Date(t0).toLocaleTimeString(), pad.l, H - 6);
+  const end = new Date(t1).toLocaleTimeString(); g.fillText(end, W - pad.r - g.measureText(end).width, H - 6);
+  g.strokeStyle = accent; g.lineWidth = 2; g.beginPath();
+  data.forEach((d, i) => i ? g.lineTo(x(d.time), y(d.value)) : g.moveTo(x(d.time), y(d.value)));
+  g.stroke();
+}
+
+$('username').addEventListener('keydown', e => { if (e.key === 'Enter') login(); });
+window.addEventListener('resize', () => user && refresh());
+if (user) start();
+</script>
+</body>
+</html>
